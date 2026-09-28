@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>لعبة المحتال - Imposter Game</title>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <style>
+        * { box-sizing: border-box; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        body { background: #1a1a2e; color: #fff; text-align: center; margin: 0; padding: 20px; }
+        .card { background: #16213e; border-radius: 12px; padding: 20px; max-width: 500px; margin: 20px auto; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
+        input, button, select { width: 80%; padding: 12px; margin: 8px 0; border-radius: 8px; border: none; font-size: 16px; }
+        input { background: #0f3460; color: #fff; text-align: center; }
+        button { background: #e94560; color: #fff; font-weight: bold; cursor: pointer; transition: 0.2s; }
+        button:hover { background: #ff6b81; }
+        .hidden { display: none !important; }
+        canvas { background: #ffffff; border-radius: 8px; cursor: crosshair; touch-action: none; margin-top: 10px; }
+        .player-list { text-align: right; background: #0f3460; padding: 10px; border-radius: 8px; }
+        .word-card { background: #e94560; padding: 20px; border-radius: 8px; font-size: 24px; font-weight: bold; margin: 15px 0; cursor: pointer; }
+    </style>
+</head>
+<body>
+
+    <h1 style="color: #e94560;">🎭 لعبة المحتال (Imposter)</h1>
+
+    <!-- 1. الشاشة الرئيسية والأسماء -->
+    <div id="screen-setup" class="card">
+        <h3>قائمة اللاعبين</h3>
+        <div id="name-inputs">
+            <input type="text" class="p-name" placeholder="لاعب 1">
+            <input type="text" class="p-name" placeholder="لاعب 2">
+            <input type="text" class="p-name" placeholder="لاعب 3">
+        </div>
+        <button onclick="addPlayerInput()">+ إضافة لاعب</button>
+        <hr>
+        <h3>اختر طريقة اللعب</h3>
+        <button onclick="selectMode('local')">📱 لعب محلي (Local Play)</button>
+        <button onclick="selectMode('online')">🌐 لعب أونلاين (Online Play)</button>
+    </div>
+
+    <!-- شاشة اللعب الأونلاين -->
+    <div id="screen-online" class="card hidden">
+        <h3>لعب أونلاين</h3>
+        <p id="online-status">جاري الاتصال...</p>
+        <div id="host-controls" class="hidden">
+            <p>أرسل هذا الرمز للطرف الثاني:</p>
+            <input type="text" id="room-code" readonly>
+        </div>
+        <div id="join-controls">
+            <input type="text" id="join-code" placeholder="أدخل رمز الغرفة">
+            <button onclick="joinRoom()">دخول الغرفة</button>
+        </div>
+        <button onclick="startOnlineGame()" id="start-online-btn" class="hidden">بدء اللعبة للجميع</button>
+    </div>
+
+    <!-- 2. كرت الكلمة دورة بـ دور -->
+    <div id="screen-card" class="card hidden">
+        <h2 id="current-player-title">دور اللاعب: </h2>
+        <p>اضغط على الكرت لكشف الكلمة (تأكد محد يشوف غيرك)</p>
+        <div class="word-card" onclick="toggleWord()" id="word-box">اضغط للاستكشاف</div>
+        <button onclick="nextPlayerCard()" id="next-card-btn" class="hidden">التالي ➔</button>
+    </div>
+
+    <!-- 3. لوحة الرسم (3 أدوار) -->
+    <div id="screen-draw" class="card hidden">
+        <h3 id="draw-turn-info">جولة الرسم</h3>
+        <p>ارسم **جزء صغير جداً** فقط من الكلمة!</p>
+        <canvas id="paintCanvas" width="350" height="300"></canvas>
+        <br>
+        <button onclick="clearCanvas()">مسح</button>
+        <button onclick="submitDraw()">تم الرسم (إنهاء الدور)</button>
+    </div>
+
+    <!-- 4. التصويت -->
+    <div id="screen-vote" class="card hidden">
+        <h2>انتهت الجولات! حان وقت التصويت 🗳️</h2>
+        <p>من هو الـ Imposter حسب الرسمة؟</p>
+        <div id="vote-options"></div>
+        <button onclick="submitVote()">إرسال التصويت</button>
+    </div>
+
+    <!-- 5. النتيجة -->
+    <div id="screen-result" class="card hidden">
+        <h2>النتيجة الأخيرة 🎉</h2>
+        <h3 id="result-text"></h3>
+        <button onclick="location.reload()">لعب مرة أخرى</button>
+    </div>
+
+    <script>
+        const words = ["كورة", "قمر", "تفاحة", "سيارة", "طيارة", "شجرة", "هاتف", "بيت"];
+        let players = [];
+        let imposterIndex = -1;
+        let selectedWord = "";
+        let currentCardIndex = 0;
+        let currentDrawTurn = 0;
+        let totalRounds = 3;
+        let currentRound = 1;
+        let votes = {};
+
+        // Online Handling
+        let peer, conn;
+        let isHost = false;
+
+        function addPlayerInput() {
+            const container = document.getElementById('name-inputs');
+            const count = container.children.length + 1;
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.className = 'p-name';
+            input.placeholder = `لاعب ${count}`;
+            container.appendChild(input);
+        }
+
+        function collectPlayers() {
+            players = [];
+            document.querySelectorAll('.p-name').forEach(inp => {
+                if(inp.value.trim() !== "") players.push(inp.value.trim());
+            });
+            return players.length >= 3;
+        }
+
+        function selectMode(mode) {
+            if(!collectPlayers()) {
+                alert("الرجاء إدخال 3 أسماء على الأقل!");
+                return;
+            }
+
+            // اختيار الكلمة والمحتال
+            imposterIndex = Math.floor(Math.random() * players.length);
+            selectedWord = words[Math.floor(Math.random() * words.length)];
+
+            if(mode === 'local') {
+                document.getElementById('screen-setup').classList.add('hidden');
+                showCardScreen();
+            } else {
+                document.getElementById('screen-setup').classList.add('hidden');
+                document.getElementById('screen-online').classList.remove('hidden');
+                initOnline();
+            }
+        }
+
+        // --- نظام الأونلاين المباشر ---
+        function initOnline() {
+            peer = new Peer();
+            peer.on('open', id => {
+                document.getElementById('online-status').innerText = "تم إنشاء الغرفة!";
+                document.getElementById('room-code').value = id;
+                document.getElementById('host-controls').classList.remove('hidden');
+                isHost = true;
+            });
+
+            peer.on('connection', c => {
+                conn = c;
+                document.getElementById('online-status').innerText = "متصل مع اللاعب الثاني!";
+                document.getElementById('start-online-btn').classList.remove('hidden');
+                setupConn();
+            });
+        }
+
+        function joinRoom() {
+            const code = document.getElementById('join-code').value.trim();
+            if(!code) return alert("أدخل الرمز أولاً");
+            peer = new Peer();
+            conn = peer.connect(code);
+            setupConn();
+            document.getElementById('online-status').innerText = "جاري الاتصال بالروم...";
+        }
+
+        function setupConn() {
+            conn.on('data', data => {
+                if(data.type === 'START') {
+                    imposterIndex = data.imposterIndex;
+                    selectedWord = data.selectedWord;
+                    players = data.players;
+                    document.getElementById('screen-online').classList.add('hidden');
+                    showCardScreen();
+                }
+            });
+        }
+
+        function startOnlineGame() {
+            conn.send({
+                type: 'START',
+                imposterIndex: imposterIndex,
+                selectedWord: selectedWord,
+                players: players
+            });
+            document.getElementById('screen-online').classList.add('hidden');
+            showCardScreen();
+        }
+
+        // --- عرض الكروت ---
+        function showCardScreen() {
+            document.getElementById('screen-card').classList.remove('hidden');
+            document.getElementById('current-player-title').innerText = `دور: ${players[currentCardIndex]}`;
+            document.getElementById('word-box').innerText = "اضغط للاستكشاف";
+            document.getElementById('next-card-btn').classList.add('hidden');
+        }
+
+        function toggleWord() {
+            const box = document.getElementById('word-box');
+            if (currentCardIndex === imposterIndex) {
+                box.innerText = "🕵️ أنت الـ IMPOSTER !";
+            } else {
+                box.innerText = `الكلمة هي: ${selectedWord}`;
+            }
+            document.getElementById('next-card-btn').classList.remove('hidden');
+        }
+
+        function nextPlayerCard() {
+            currentCardIndex++;
+            if(currentCardIndex < players.length) {
+                showCardScreen();
+            } else {
+                document.getElementById('screen-card').classList.add('hidden');
+                startDrawingPhase();
+            }
+        }
+
+        // --- نظام الرسم ---
+        let canvas, ctx, drawing = false;
+
+        function startDrawingPhase() {
+            document.getElementById('screen-draw').classList.remove('hidden');
+            canvas = document.getElementById('paintCanvas');
+            ctx = canvas.getContext('2d');
+            
+            // أحداث الرسم
+            canvas.onmousedown = () => drawing = true;
+            canvas.onmouseup = () => { drawing = false; ctx.beginPath(); };
+            canvas.onmousemove = draw;
+
+            canvas.ontouchstart = () => drawing = true;
+            canvas.ontouchend = () => { drawing = false; ctx.beginPath(); };
+            canvas.ontouchmove = (e) => {
+                const touch = e.touches[0];
+                const rect = canvas.getBoundingClientRect();
+                draw({ clientX: touch.clientX - rect.left, clientY: touch.clientY - rect.top });
+            };
+
+            updateDrawTurnInfo();
+        }
+
+        function draw(e) {
+            if(!drawing) return;
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX ? e.clientX - rect.left : e.clientX;
+            const y = e.clientY ? e.clientY - rect.top : e.clientY;
+            
+            ctx.lineWidth = 3;
+            ctx.lineCap = 'round';
+            ctx.strokeStyle = '#000';
+
+            ctx.lineTo(x, y);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(x, y);
+        }
+
+        function clearCanvas() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+        }
+
+        function updateDrawTurnInfo() {
+            document.getElementById('draw-turn-info').innerText = 
+                `الجولة ${currentRound} من 3 | دور الرسم: ${players[currentDrawTurn]}`;
+        }
+
+        function submitDraw() {
+            currentDrawTurn++;
+            if(currentDrawTurn >= players.length) {
+                currentDrawTurn = 0;
+                currentRound++;
+            }
+
+            if(currentRound > totalRounds) {
+                document.getElementById('screen-draw').classList.add('hidden');
+                startVotingPhase();
+            } else {
+                updateDrawTurnInfo();
+            }
+        }
+
+        // --- التصويت والنتيجة ---
+        function startVotingPhase() {
+            document.getElementById('screen-vote').classList.remove('hidden');
+            const container = document.getElementById('vote-options');
+            container.innerHTML = "";
+
+            players.forEach((p, idx) => {
+                const btn = document.createElement('button');
+                btn.innerText = `تصويت ضد: ${p}`;
+                btn.onclick = () => {
+                    votes[p] = (votes[p] || 0) + 1;
+                    btn.style.background = "#2ed573";
+                    btn.disabled = true;
+                };
+                container.appendChild(btn);
+            });
+        }
+
+        function submitVote() {
+            document.getElementById('screen-vote').classList.add('hidden');
+            document.getElementById('screen-result').classList.remove('hidden');
+
+            const imposterName = players[imposterIndex];
+            document.getElementById('result-text').innerText = 
+                `الكلمة كانت: (${selectedWord})\n الـ Imposter الحقيقي هو: [ ${imposterName} ]!`;
+        }
+    </script>
+</body>
+</html>
